@@ -1,22 +1,36 @@
 #include "paths.h"
 
-#include <windows.h>
-
 #include <vector>
 
 namespace sitcom {
+namespace {
+
+HMODULE g_dll_module = nullptr;
+
+}  // namespace
+
+void SetDllModule(HMODULE mod) {
+  g_dll_module = mod;
+}
+
+HMODULE GetDllModule() {
+  return g_dll_module;
+}
 
 std::wstring GetDllDirectory() {
-  HMODULE mod = nullptr;
-  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                          reinterpret_cast<LPCWSTR>(&GetDllDirectory), &mod)) {
+  HMODULE mod = g_dll_module;
+  if (!mod) {
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&GetDllDirectory), &mod);
+  }
+  if (!mod) {
     return L".";
   }
 
   std::vector<wchar_t> buf(MAX_PATH);
   DWORD n = GetModuleFileNameW(mod, buf.data(), static_cast<DWORD>(buf.size()));
-  while (n == buf.size()) {
+  while (n != 0 && n == buf.size()) {
     buf.resize(buf.size() * 2);
     n = GetModuleFileNameW(mod, buf.data(), static_cast<DWORD>(buf.size()));
   }
@@ -43,6 +57,19 @@ std::wstring JoinPath(const std::wstring& a, const std::wstring& b) {
     return a + b;
   }
   return a + L"\\" + b;
+}
+
+bool FileExists(const std::wstring& path) {
+  const DWORD attrs = GetFileAttributesW(path.c_str());
+  return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+bool EnsureDirectory(const std::wstring& path) {
+  if (CreateDirectoryW(path.c_str(), nullptr) || GetLastError() == ERROR_ALREADY_EXISTS) {
+    return true;
+  }
+  const DWORD attrs = GetFileAttributesW(path.c_str());
+  return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY);
 }
 
 std::string WideToUtf8(const std::wstring& w) {

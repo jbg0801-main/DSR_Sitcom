@@ -4,12 +4,54 @@
 
 #include <windows.h>
 
+#include <cwctype>
+
 namespace sitcom {
 namespace {
 
+bool ParseBoolToken(const wchar_t* raw, bool fallback) {
+  if (!raw || raw[0] == L'\0') {
+    return fallback;
+  }
+  // Trim leading whitespace.
+  while (*raw == L' ' || *raw == L'\t') {
+    ++raw;
+  }
+  wchar_t buf[32];
+  size_t n = 0;
+  for (; raw[n] && n + 1 < sizeof(buf) / sizeof(buf[0]); ++n) {
+    if (raw[n] == L' ' || raw[n] == L'\t' || raw[n] == L'\r' || raw[n] == L'\n') {
+      break;
+    }
+    buf[n] = static_cast<wchar_t>(towlower(raw[n]));
+  }
+  buf[n] = L'\0';
+  if (buf[0] == L'\0') {
+    return fallback;
+  }
+  if (wcscmp(buf, L"1") == 0 || wcscmp(buf, L"true") == 0 || wcscmp(buf, L"yes") == 0 ||
+      wcscmp(buf, L"on") == 0) {
+    return true;
+  }
+  if (wcscmp(buf, L"0") == 0 || wcscmp(buf, L"false") == 0 || wcscmp(buf, L"no") == 0 ||
+      wcscmp(buf, L"off") == 0) {
+    return false;
+  }
+  return fallback;
+}
+
 bool ReadBool(const wchar_t* section, const wchar_t* key, bool fallback,
               const std::wstring& path) {
-  return GetPrivateProfileIntW(section, key, fallback ? 1 : 0, path.c_str()) != 0;
+  // GetPrivateProfileIntW does NOT parse "true"/"false" — only integers.
+  // A present key with value "true" was previously read as 0 → everything off.
+  wchar_t buf[64];
+  const DWORD n =
+      GetPrivateProfileStringW(section, key, L"", buf, static_cast<DWORD>(sizeof(buf) / sizeof(buf[0])),
+                               path.c_str());
+  if (n == 0 && buf[0] == L'\0') {
+    return fallback;
+  }
+  return ParseBoolToken(buf, fallback);
 }
 
 int ReadInt(const wchar_t* section, const wchar_t* key, int fallback,
@@ -39,7 +81,7 @@ std::string ReadString(const wchar_t* section, const wchar_t* key, const char* f
 bool LoadConfig(const std::wstring& ini_path, Config& out) {
   Config cfg;
   cfg.enabled = ReadBool(L"sitcom", L"enabled", true, ini_path);
-  cfg.log = ReadBool(L"sitcom", L"log", false, ini_path);
+  cfg.log = ReadBool(L"sitcom", L"log", true, ini_path);
   cfg.poll_hz = ReadInt(L"sitcom", L"poll_hz", 20, ini_path);
   if (cfg.poll_hz < 1) {
     cfg.poll_hz = 1;

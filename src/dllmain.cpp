@@ -1,7 +1,9 @@
 #include "audio.h"
 #include "config.h"
+#include "credit.h"
 #include "dinput8_proxy.h"
 #include "events.h"
+#include "fmod_volume.h"
 #include "game_state.h"
 #include "log.h"
 #include "paths.h"
@@ -9,47 +11,87 @@
 #include <windows.h>
 
 #include <atomic>
+#include <cmath>
 #include <string>
-#include <thread>
 
 namespace {
 
-HMODULE g_module = nullptr;
 HMODULE g_real_dinput = nullptr;
 std::atomic<bool> g_running{false};
-std::thread g_worker;
+HANDLE g_worker_thread = nullptr;
 HANDLE g_stop_event = nullptr;
 
-void WorkerMain() {
+DWORD WINAPI WorkerMain(LPVOID) {
   using namespace sitcom;
 
-  // Let the game finish early init before touching patterns / audio.
-  WaitForSingleObject(g_stop_event, 5000);
+  WaitForSingleObject(g_stop_event, 1500);
   if (!g_running) {
-    return;
+    return 0;
   }
 
   const std::wstring dll_dir = GetDllDirectory();
   const std::wstring sitcom_dir = JoinPath(dll_dir, L"sitcom");
+  EnsureDirectory(sitcom_dir);
+
+  const std::wstring log_path = JoinPath(sitcom_dir, L"sitcom.log");
   const std::wstring ini_path = JoinPath(sitcom_dir, L"config.ini");
+
+  if (!LogBootstrap(log_path)) {
+    LogBootstrap(JoinPath(dll_dir, L"sitcom.log"));
+  }
+
+  LogWrite("worker: start");
+  LogWrite("worker: dll_dir=" + WideToUtf8(dll_dir));
+  LogWrite("worker: sitcom_dir=" + WideToUtf8(sitcom_dir));
+  LogWrite(std::string("worker: config.ini exists=") + (FileExists(ini_path) ? "yes" : "NO"));
+
+  WaitForSingleObject(g_stop_event, 1500);
+  if (!g_running) {
+    return 0;
+  }
 
   Config cfg;
   LoadConfig(ini_path, cfg);
-  LogInit(JoinPath(sitcom_dir, L"sitcom.log"), cfg.log);
-  LogWrite("worker: start");
-  LogWrite("worker: dll_dir=" + WideToUtf8(dll_dir));
+
+  if (!FileExists(ini_path)) {
+    cfg.log = true;
+    LogWrite("worker: config missing — using defaults with logging on");
+  }
+  LogInit(log_path, cfg.log);
+  if (cfg.log) {
+    LogWrite("worker: logging enabled");
+  }
+
+  LogWrite(std::string("worker: enabled=") + (cfg.enabled ? "1" : "0") +
+           " volume=" + std::to_string(cfg.volume) + " poll_hz=" + std::to_string(cfg.poll_hz));
 
   if (!cfg.enabled) {
     LogWrite("worker: disabled via config");
-    return;
+    return 0;
   }
+
+  // Attach to FMOD only after the game has had time to load it (no force LoadLibrary).
+  FmodVolumeInit();
 
   Audio audio;
   const std::wstring sounds = JoinPath(sitcom_dir, Utf8ToWide(cfg.sounds_dir));
+  LogWrite(std::string("worker: sounds_dir exists=") + (FileExists(JoinPath(sounds, L"laugh.wav")) ||
+                                                                FileExists(JoinPath(sounds, L"laugh_01.wav"))
+                                                            ? "yes"
+                                                            : "check"));
   if (!audio.Init(sounds, cfg.volume)) {
     LogWrite("worker: audio init failed");
-    return;
+    FmodVolumeShutdown();
+    return 0;
   }
+
+  float se = 1.f;
+  if (FmodTryGetSfxVolume(&se)) {
+    audio.SetGameSfxVolume(se);
+  }
+
+  LogWrite("worker: playing startup laugh smoke-test");
+  audio.Play(SoundCategory::Laugh);
 
   GameState game;
   int failures = 0;
@@ -57,31 +99,72 @@ void WorkerMain() {
     LogWrite("worker: waiting for game patterns...");
     if (WaitForSingleObject(g_stop_event, 2000) != WAIT_TIMEOUT) {
       audio.Shutdown();
-      return;
+      FmodVolumeShutdown();
+      return 0;
     }
+    // Keep trying FMOD attach while patterns resolve.
+    FmodVolumeInit();
     if (++failures > 60) {
       LogWrite("worker: giving up resolving patterns");
       audio.Shutdown();
-      return;
+      FmodVolumeShutdown();
+      return 0;
     }
   }
+  LogWrite("worker: GameState ready");
 
   EventDetector events;
-  const DWORD poll_ms = static_cast<DWORD>(1000 / cfg.poll_hz);
-  LogWrite("worker: polling");
+  const DWORD poll_ms = static_cast<DWORD>(1000 / (cfg.poll_hz > 0 ? cfg.poll_hz : 20));
+  LogWrite("worker: polling every " + std::to_string(poll_ms) + "ms");
 
+  std::uint64_t ticks = 0;
+  float last_logged_sfx = -1.f;
   while (g_running) {
-    // Hot-reload volume / toggles lightly each second-ish is overkill; read snapshot only.
     const GameSnapshot snap = game.Read();
+
+    float sfx = 1.f;
+    const bool sfx_ok = FmodTryGetSfxVolume(&sfx);
+    if (sfx_ok) {
+      audio.SetGameSfxVolume(sfx);
+      if (std::fabs(sfx - last_logged_sfx) > 0.01f) {
+        LogWrite("audio: FMOD SE volume=" + std::to_string(sfx));
+        last_logged_sfx = sfx;
+      }
+    } else {
+      audio.SetGameSfxVolume(1.f);
+    }
+
+    CreditUpdate(snap.on_title_screen);
+
+    if ((ticks++ % 100) == 0) {
+      char sfx_buf[32];
+      if (sfx_ok) {
+        snprintf(sfx_buf, sizeof(sfx_buf), "%.2f", sfx);
+      } else {
+        snprintf(sfx_buf, sizeof(sfx_buf), "?");
+      }
+      LogWrite(std::string("worker: heartbeat in_game=") + std::to_string(snap.in_gameplay) +
+               " title=" + std::to_string(snap.on_title_screen) +
+               " player_valid=" + std::to_string(snap.player_valid) +
+               " hp=" + std::to_string(snap.player_hp) + "/" + std::to_string(snap.player_max_hp) +
+               " boss_fight=" + std::to_string(snap.boss_fight_active) +
+               " cheer=" + std::to_string(snap.boss_cheer_flag) +
+               " banner=" + std::to_string(snap.banner_message) + " sfx=" + sfx_buf +
+               " area=" + std::to_string(snap.area_number) + "/" +
+               std::to_string(snap.world_number));
+    }
     events.Update(snap, cfg, audio);
     if (WaitForSingleObject(g_stop_event, poll_ms) != WAIT_TIMEOUT) {
       break;
     }
   }
 
+  CreditShutdown();
   game.Shutdown();
   audio.Shutdown();
+  FmodVolumeShutdown();
   LogWrite("worker: stop");
+  return 0;
 }
 
 }  // namespace
@@ -90,7 +173,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
   switch (reason) {
     case DLL_PROCESS_ATTACH: {
       DisableThreadLibraryCalls(hModule);
-      g_module = hModule;
+      sitcom::SetDllModule(hModule);
       g_stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 
       DirectInput8Create_t create = nullptr;
@@ -99,7 +182,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
       }
 
       g_running = true;
-      g_worker = std::thread(WorkerMain);
+      // CreateThread (not std::thread) — safer from DllMain under loader lock / Wine.
+      g_worker_thread = CreateThread(nullptr, 0, WorkerMain, nullptr, 0, nullptr);
       break;
     }
     case DLL_PROCESS_DETACH: {
@@ -107,8 +191,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
       if (g_stop_event) {
         SetEvent(g_stop_event);
       }
-      if (g_worker.joinable()) {
-        g_worker.join();
+      if (g_worker_thread) {
+        WaitForSingleObject(g_worker_thread, 5000);
+        CloseHandle(g_worker_thread);
+        g_worker_thread = nullptr;
       }
       UnloadRealDinput8(g_real_dinput);
       g_real_dinput = nullptr;

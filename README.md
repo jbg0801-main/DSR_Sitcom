@@ -7,7 +7,7 @@ Plays local WAV clips when:
 - the player takes damage or dies (laughter)
 - a boss fight starts / HP bar comes up via vanilla event flags (cheering; again on fog re-entry)
 - that boss’s defeated flag flips (applause)
-- the area/world number changes (scene wipe — proxy for the area title card)
+- the area title card appears (scene wipe — MenuMan banner type 8 / Current Location)
 
 ## Install
 
@@ -63,8 +63,12 @@ podman run --rm -v "$PWD":/src -w /src docker.io/library/fedora:44 \
 
 `dinput8.dll` proxies `DirectInput8Create` to the system DLL and starts a worker thread that:
 
-1. Resolves `BaseB` / `BaseE` via AOB scans (Phokz / community tables)
-2. Optionally installs a tiny lock-on capture hook for boss HP
-3. Polls ~20 Hz and plays sounds through **miniaudio**
+1. Resolves `BaseB` / `BaseE` and the event-flag manager via AOB scans
+2. Polls ~20 Hz for player HP, boss fight/defeat flags, and area changes
+3. Plays WAVs through **winmm `PlaySound`** with PCM gain  
+   (`config volume` × in-game **Sound Effect** / FMOD `SE` category volume)
+4. Draws a title-menu credit bar: `Sitcom mod by jbg0801 2026`
+
+On first load it also writes `sitcom/sitcom.log` (with `log=true`) and plays a short laugh as a smoke test that the DLL and clips are reachable.
 
 See [tools/POINTERS.md](tools/POINTERS.md) for pointer notes.

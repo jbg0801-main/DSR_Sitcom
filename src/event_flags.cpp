@@ -64,7 +64,7 @@ const std::unordered_map<std::string, int> kFlagAreas = {
 }  // namespace
 
 bool EventFlags::FlagOffset(std::int32_t flag_id, int* out_offset, std::uint32_t* out_mask) {
-  // DSR-Gadget algorithm (IDs zero-padded to 8 digits).
+  // DSR-Gadget / EventPocket algorithm (IDs zero-padded to 8 digits).
   char id[16];
   snprintf(id, sizeof(id), "%08d", flag_id);
   if (std::strlen(id) != 8) {
@@ -102,7 +102,7 @@ bool EventFlags::Resolve() {
   const auto base = reinterpret_cast<std::uintptr_t>(info.lpBaseOfDll);
   const auto size = static_cast<std::size_t>(info.SizeOfImage);
 
-  // EventFlagsAOB from DSR-Gadget
+  // EventFlagsAOB from DSR-Gadget / EventPocket
   // 48 8B 0D ?? ?? ?? ?? 99 33 C2 45 33 C0 2B C2 8D 50 F6
   const std::uint8_t pat[] = {0x48, 0x8B, 0x0D, 0, 0, 0, 0, 0x99, 0x33, 0xC2, 0x45, 0x33,
                               0xC0, 0x2B, 0xC2, 0x8D, 0x50, 0xF6};
@@ -142,12 +142,18 @@ bool EventFlags::ReadFlag(std::int32_t flag_id, bool* out_value) const {
   if (!IsReadable(flags_ptr_slot_)) {
     return false;
   }
-  const auto base = *reinterpret_cast<std::uintptr_t*>(flags_ptr_slot_);
-  if (!base || !IsReadable(base + static_cast<std::uintptr_t>(offset))) {
+
+  // EventPocket / DSR-Gadget: [[slot] + 0] + 0  — two pointer hops, then bitfield + offset.
+  const auto level1 = *reinterpret_cast<std::uintptr_t*>(flags_ptr_slot_);
+  if (!level1 || !IsReadable(level1)) {
     return false;
   }
-  // DSR-Gadget: EventFlags + 0 + 0, then offset into bitfield
-  const auto word = *reinterpret_cast<std::uint32_t*>(base + static_cast<std::uintptr_t>(offset));
+  const auto bitfield = *reinterpret_cast<std::uintptr_t*>(level1);
+  if (!bitfield || !IsReadable(bitfield + static_cast<std::uintptr_t>(offset))) {
+    return false;
+  }
+
+  const auto word = *reinterpret_cast<std::uint32_t*>(bitfield + static_cast<std::uintptr_t>(offset));
   *out_value = (word & mask) != 0;
   return true;
 }

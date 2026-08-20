@@ -12,6 +12,8 @@ add_library(dinput8 SHARED
   src/log.cpp
   src/config.cpp
   src/audio.cpp
+  src/credit.cpp
+  src/fmod_volume.cpp
   src/event_flags.cpp
   src/game_state.cpp
   src/events.cpp
@@ -35,6 +37,9 @@ target_link_libraries(dinput8 PRIVATE
   winmm
   psapi
   user32
+  gdi32
+  d3d11
+  dxgi
 )
 
 # Fully static so players don't need MinGW runtime DLLs next to the game.
