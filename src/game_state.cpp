@@ -1,17 +1,18 @@
 #include "game_state.h"
 
+#include "event_flags.h"
 #include "log.h"
-#include "target_hook.h"
 
 #include <windows.h>
 #include <psapi.h>
 
 #include <cstring>
 #include <string>
-#include <unordered_set>
 
 namespace sitcom {
 namespace {
+
+EventFlags g_event_flags;
 
 bool IsReadable(std::uintptr_t ptr) {
   if (!ptr) {
@@ -52,29 +53,52 @@ std::uintptr_t PatternScan(std::uintptr_t base, std::size_t size, const std::uin
   return 0;
 }
 
-// RIP-relative: addr points at opcode start of `48 8B 05 xx xx xx xx` (or 48 8B 0D...)
 std::uintptr_t ResolveRipMov(std::uintptr_t insn) {
-  if (!insn) {
-    return 0;
-  }
   const auto rel = *reinterpret_cast<std::int32_t*>(insn + 3);
   return insn + 7 + rel;
 }
 
-const std::unordered_set<std::int32_t> kBossCharIds = {
-    2230, 2231, 2232, 2240, 2250, 2320, 2360, 2730, 3230, 3320, 3471,
-    4100, 4500, 4510, 5200, 5210, 5220, 5230, 5250, 5260, 5270, 5271,
-    5280, 5290, 5320, 5350, 5351, 5370, 5390,
+// cheer_flag → defeat_flag. Cheer flags come from vanilla EMEVD
+// (Display Boss Health Bar / room-entry events). Prefer bonfire-restarting
+// event IDs or explicit bar toggles so re-entering a fog gate cheers again.
+struct BossPair {
+  std::int32_t cheer_flag;
+  std::int32_t defeat_flag;
 };
 
-bool IsBossCharId(std::int32_t id) {
-  // CharacterID field is often stored as the numeric cXXXX id.
-  if (kBossCharIds.count(id) != 0) {
-    return true;
-  }
-  // Sometimes stored as 4-digit with different packing; also accept cXXXX * 10 style rarely.
-  return false;
-}
+constexpr BossPair kBossPairs[] = {
+    {11815396, 16},         // Asylum Demon
+    {11815382, 11810900},   // Stray Demon
+    {11805392, 15},         // Gwyn
+    {11705392, 14},         // Seath
+    {11705383, 14},         // Seath (crystal cave approach)
+    {11605392, 13},         // Four Kings
+    {11605382, 13},         // Four Kings (alt)
+    {11515382, 11510900},   // Gwyndolin
+    {11515392, 12},         // Ornstein & Smough
+    {11515396, 12},         // O&S phase / super
+    {11505392, 11},         // Iron Golem
+    {11415392, 10},         // Bed of Chaos
+    {11415372, 11410900},   // Ceaseless Discharge
+    {11415382, 11410901},   // Centipede Demon
+    {11415342, 11410410},   // Demon Firesage
+    {11405392, 9},          // Quelaag
+    {11315392, 7},          // Nito
+    {11305392, 6},          // Pinwheel
+    {11215003, 11210000},   // Sanctuary Guardian
+    {11215013, 11210001},   // Artorias
+    {11215023, 11210002},   // Manus
+    {11215063, 11210005},   // Kalameet
+    {11205392, 5},          // Sif
+    {11205382, 11200900},   // Moonlight Butterfly
+    {11105392, 4},          // Priscilla
+    {11105398, 4},          // Priscilla (alt)
+    {11015392, 3},          // Bell Gargoyles
+    {11015396, 3},          // Bell Gargoyles (2nd)
+    {11015384, 11010901},   // Taurus Demon
+    {11015372, 11010902},   // Capra Demon
+    {11005392, 2},          // Gaping Dragon
+};
 
 }  // namespace
 
@@ -90,8 +114,6 @@ bool GameState::ResolveBases() {
   const auto base = reinterpret_cast<std::uintptr_t>(info.lpBaseOfDll);
   const auto size = static_cast<std::size_t>(info.SizeOfImage);
 
-  // GetB — BaseB (player game data / ChrStat)
-  // 48 8B 05 ?? ?? ?? ?? 45 33 ED 48 8B F1 48 85 C0
   const std::uint8_t pat_b[] = {0x48, 0x8B, 0x05, 0, 0, 0, 0, 0x45, 0x33, 0xED, 0x48, 0x8B, 0xF1,
                                 0x48, 0x85, 0xC0};
   const char mask_b[] = "xxx????xxxxxxxxx";
@@ -102,8 +124,6 @@ bool GameState::ResolveBases() {
   }
   base_b_ptr_ = ResolveRipMov(hit_b);
 
-  // GetE — BaseE (area / world numbers)
-  // 48 8B 05 ?? ?? ?? ?? 48 8B 88 98 0B 00 00 8B 41 3C C3
   const std::uint8_t pat_e[] = {0x48, 0x8B, 0x05, 0,    0,    0,    0,    0x48, 0x8B, 0x88,
                                 0x98, 0x0B, 0x00, 0x00, 0x8B, 0x41, 0x3C, 0xC3};
   const char mask_e[] = "xxx????xxxxxxxxxxx";
@@ -126,13 +146,15 @@ bool GameState::ResolveBases() {
 bool GameState::Init() {
   ready_ = ResolveBases();
   if (ready_) {
-    InstallTargetHook();
+    if (!g_event_flags.Init()) {
+      LogWrite("game_state: event flags unavailable (boss cheer/applause disabled)");
+    }
   }
   return ready_;
 }
 
 void GameState::Shutdown() {
-  RemoveTargetHook();
+  g_event_flags.Shutdown();
   ready_ = false;
   base_b_ptr_ = 0;
   base_e_ptr_ = 0;
@@ -172,23 +194,28 @@ GameSnapshot GameState::Read() {
     }
   }
 
-  // Boss via last locked target (hook) — HP offsets from Phokz "Last Hit Entity".
-  const auto target = GetLockedTargetPtr();
-  if (target && IsReadable(target) && IsReadable(target + 0x3EC)) {
-    const auto hp = ReadT<std::int32_t>(target + 0x3E8);
-    const auto max_hp = ReadT<std::int32_t>(target + 0x3EC);
-    const auto char_id = ReadT<std::int32_t>(target + 0xC8);
-    if (max_hp > 0 && max_hp <= 999999 && hp >= 0 && hp <= max_hp && IsBossCharId(char_id)) {
-      s.boss_bar_active = hp > 0;
-      s.boss_hp = hp;
-      s.boss_max_hp = max_hp;
-      s.boss_char_id = char_id;
-    } else if (max_hp >= 2000 && max_hp <= 999999 && hp >= 0 && hp <= max_hp) {
-      // Fallback: very high HP locked target likely a boss if ID unknown.
-      s.boss_bar_active = hp > 0;
-      s.boss_hp = hp;
-      s.boss_max_hp = max_hp;
-      s.boss_char_id = char_id;
+  // Boss fights via event flags (EMEVD), not lock-on.
+  if (g_event_flags.Ready() && s.player_valid) {
+    for (const auto& pair : kBossPairs) {
+      bool cheer = false;
+      bool defeated = false;
+      if (!g_event_flags.ReadFlag(pair.cheer_flag, &cheer)) {
+        continue;
+      }
+      if (!g_event_flags.ReadFlag(pair.defeat_flag, &defeated)) {
+        continue;
+      }
+      if (cheer) {
+        s.cheer_flags_on.push_back(pair.cheer_flag);
+      }
+      if (defeated) {
+        s.defeat_flags_on.push_back(pair.defeat_flag);
+      }
+      // Active fight: bar/entry flag on and boss not yet defeated.
+      if (cheer && !defeated && !s.boss_fight_active) {
+        s.boss_fight_active = true;
+        s.boss_defeat_flag = pair.defeat_flag;
+      }
     }
   }
 

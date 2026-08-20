@@ -5,8 +5,8 @@ Sitcom canned-audience overlay for **Dark Souls Remastered** (PC).
 Plays local WAV clips when:
 
 - the player takes damage or dies (laughter)
-- a boss health bar is effectively up via lock-on (cheering)
-- that boss dies (applause)
+- a boss fight starts / HP bar comes up via vanilla event flags (cheering; again on fog re-entry)
+- that boss’s defeated flag flips (applause)
 - the area/world number changes (scene wipe — proxy for the area title card)
 
 ## Install

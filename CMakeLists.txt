@@ -12,9 +12,9 @@ add_library(dinput8 SHARED
   src/log.cpp
   src/config.cpp
   src/audio.cpp
+  src/event_flags.cpp
   src/game_state.cpp
   src/events.cpp
-  src/target_hook.cpp
   src/exports.def
 )
 

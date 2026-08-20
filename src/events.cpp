@@ -4,7 +4,9 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <string>
+#include <unordered_set>
 
 namespace sitcom {
 
@@ -13,6 +15,7 @@ void EventDetector::Reset() {
   prev_ = {};
   last_laugh_hit_ms_ = 0;
   applause_armed_ = false;
+  armed_defeat_flag_ = 0;
   seen_area_ = false;
   last_area_ = 0;
   last_world_ = 0;
@@ -58,32 +61,39 @@ void EventDetector::Update(const GameSnapshot& snap, const Config& cfg, Audio& a
     }
   }
 
-  // Boss bar / boss death
-  if (snap.boss_bar_active && !prev_.boss_bar_active) {
+  // Boss appear: rising edge of "fight active" (EMEVD bar/entry flag while undefeated).
+  // One cheer per engagement; leaving the arena / dying clears the flag so fog re-entry cheers again.
+  if (cfg.cheer_on_boss_bar && snap.boss_fight_active && !prev_.boss_fight_active) {
+    LogWrite("event: boss fight start defeat_flag=" + std::to_string(snap.boss_defeat_flag));
+    audio.Play(SoundCategory::Cheer);
     applause_armed_ = true;
-    if (cfg.cheer_on_boss_bar) {
-      LogWrite("event: boss bar appear id=" + std::to_string(snap.boss_char_id));
-      audio.Play(SoundCategory::Cheer);
-    }
+    armed_defeat_flag_ = snap.boss_defeat_flag;
   }
 
-  if (applause_armed_ && prev_.boss_bar_active) {
-    const bool died = (snap.boss_hp <= 0 && prev_.boss_hp > 0) ||
-                      (!snap.boss_bar_active && prev_.boss_hp > 0);
-    if (died) {
-      if (cfg.applause_on_boss_death) {
-        LogWrite("event: boss death");
+  if (!snap.boss_fight_active && prev_.boss_fight_active && !applause_armed_) {
+    // left without kill — ready for next fog entry
+  }
+
+  // Boss death: defeat event flag OFF → ON (vanilla EMEVD).
+  if (cfg.applause_on_boss_death) {
+    std::unordered_set<std::int32_t> prev_def(prev_.defeat_flags_on.begin(),
+                                              prev_.defeat_flags_on.end());
+    for (const auto id : snap.defeat_flags_on) {
+      if (prev_def.count(id) == 0) {
+        LogWrite("event: boss defeated flag=" + std::to_string(id));
         audio.Play(SoundCategory::Applause);
+        if (armed_defeat_flag_ == id) {
+          applause_armed_ = false;
+          armed_defeat_flag_ = 0;
+        }
       }
-      applause_armed_ = false;
     }
   }
 
-  if (!snap.boss_bar_active && !prev_.boss_bar_active) {
-    // Clear arm if we left combat without a kill signal for a while — keep armed only while
-    // we had an active bar recently; if bar gone and hp unknown, disarm after lose-lock.
-    if (!snap.boss_bar_active && prev_.boss_bar_active == false && snap.boss_hp == 0) {
-      // no-op
+  if (!snap.boss_fight_active) {
+    // If we left the fight without a defeat flag edge, drop arm so we don't applaud later wrongly.
+    if (!applause_armed_) {
+      armed_defeat_flag_ = 0;
     }
   }
 
