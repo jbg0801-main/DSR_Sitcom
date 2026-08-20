@@ -70,9 +70,6 @@ DWORD WINAPI WorkerMain(LPVOID) {
     return 0;
   }
 
-  // Attach to FMOD only after the game has had time to load it (no force LoadLibrary).
-  FmodVolumeInit();
-
   Audio audio;
   const std::wstring sounds = JoinPath(sitcom_dir, Utf8ToWide(cfg.sounds_dir));
   LogWrite(std::string("worker: sounds_dir exists=") + (FileExists(JoinPath(sounds, L"laugh.wav")) ||
@@ -81,13 +78,7 @@ DWORD WINAPI WorkerMain(LPVOID) {
                                                             : "check"));
   if (!audio.Init(sounds, cfg.volume)) {
     LogWrite("worker: audio init failed");
-    FmodVolumeShutdown();
     return 0;
-  }
-
-  float se = 1.f;
-  if (FmodTryGetSfxVolume(&se)) {
-    audio.SetGameSfxVolume(se);
   }
 
   LogWrite("worker: playing startup laugh smoke-test");
@@ -99,19 +90,25 @@ DWORD WINAPI WorkerMain(LPVOID) {
     LogWrite("worker: waiting for game patterns...");
     if (WaitForSingleObject(g_stop_event, 2000) != WAIT_TIMEOUT) {
       audio.Shutdown();
-      FmodVolumeShutdown();
       return 0;
     }
-    // Keep trying FMOD attach while patterns resolve.
-    FmodVolumeInit();
     if (++failures > 60) {
       LogWrite("worker: giving up resolving patterns");
       audio.Shutdown();
-      FmodVolumeShutdown();
       return 0;
     }
   }
   LogWrite("worker: GameState ready");
+
+  // Attach FMOD only after the game is up — IAT/inline hooks, no LoadLibrary, no probes.
+  if (FmodVolumeInit()) {
+    float se = 1.f;
+    if (FmodTryGetSfxVolume(&se)) {
+      audio.SetGameSfxVolume(se);
+    }
+  } else {
+    LogWrite("fmod: not ready yet — will retry while polling");
+  }
 
   EventDetector events;
   const DWORD poll_ms = static_cast<DWORD>(1000 / (cfg.poll_hz > 0 ? cfg.poll_hz : 20));

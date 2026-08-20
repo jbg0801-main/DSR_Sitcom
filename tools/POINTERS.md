@@ -37,11 +37,12 @@ Record the game build you tested against here after first successful run:
 
 ## Sound Effect volume
 
-- Live from FMOD Event category **`SE`** in `fmod_event64.dll`
-- Hooks: C `GetCategory` / `SetVolume` / `Update` / `Create`, plus C++ `EventSystemI::update` and
-  `EventCategoryI::setVolume` when exported
-- Fallback probe: Overhaul chain `fmod_event64+0x77278` → `+0x470` → `+0x40` (same root as game-time)
-- Final gain = `config.ini volume` × FMOD SE category volume (0–1)
+- DSR uses the **FMOD C++** API (`EventSystemI::update`, `EventCategoryI::setVolume`);
+  C `FMOD_EventSystem_Update` / `SetVolume` are never called (hooks stay at 0).
+- After GameState is ready: inline-hook those C++ exports, then read category **`SE`**
+  via C `GetCategory`/`GetVolume` using the live `this` pointer.
+- Never `LoadLibrary` FMOD; never probe guessed EventSystem pointers.
+- Final gain = `config.ini volume` × FMOD `SE` volume (0–1)
 
 ## Title credit
 
