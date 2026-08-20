@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <cwchar>
 #include <mutex>
 #include <vector>
 
@@ -79,8 +80,21 @@ void ReleaseDeviceObjects() {
 }
 
 bool RenderTextBitmap(std::vector<uint32_t>* out_bgra, int* out_w, int* out_h) {
-  const int w = 720;
-  const int h = 56;
+  HDC screen = GetDC(nullptr);
+  HDC hdc = CreateCompatibleDC(screen);
+  // Match title-menu chrome: small white UI text on black (like Online / App Ver).
+  HFONT font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                           OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                           DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+  HGDIOBJ old_font = font ? SelectObject(hdc, font) : nullptr;
+
+  SIZE sz{};
+  GetTextExtentPoint32W(hdc, kCreditText, static_cast<int>(wcslen(kCreditText)), &sz);
+  const int pad_x = 10;
+  const int pad_y = 6;
+  const int w = sz.cx + pad_x * 2;
+  const int h = sz.cy + pad_y * 2;
+
   BITMAPINFO bmi{};
   bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
   bmi.bmiHeader.biWidth = w;
@@ -90,28 +104,26 @@ bool RenderTextBitmap(std::vector<uint32_t>* out_bgra, int* out_w, int* out_h) {
   bmi.bmiHeader.biCompression = BI_RGB;
 
   void* bits = nullptr;
-  HDC screen = GetDC(nullptr);
-  HDC hdc = CreateCompatibleDC(screen);
   HBITMAP bmp = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
   ReleaseDC(nullptr, screen);
   if (!bmp || !bits) {
-    if (hdc) {
-      DeleteDC(hdc);
+    if (old_font) {
+      SelectObject(hdc, old_font);
     }
+    if (font) {
+      DeleteObject(font);
+    }
+    DeleteDC(hdc);
     return false;
   }
   HGDIOBJ old_bmp = SelectObject(hdc, bmp);
   RECT rc{0, 0, w, h};
-  HBRUSH brush = CreateSolidBrush(RGB(18, 16, 14));
+  HBRUSH brush = CreateSolidBrush(RGB(0, 0, 0));
   FillRect(hdc, &rc, brush);
   DeleteObject(brush);
 
   SetBkMode(hdc, TRANSPARENT);
-  SetTextColor(hdc, RGB(230, 220, 190));
-  HFONT font = CreateFontW(-24, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                           OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                           DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-  HGDIOBJ old_font = font ? SelectObject(hdc, font) : nullptr;
+  SetTextColor(hdc, RGB(255, 255, 255));
   DrawTextW(hdc, kCreditText, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
   if (old_font) {
     SelectObject(hdc, old_font);
@@ -123,7 +135,7 @@ bool RenderTextBitmap(std::vector<uint32_t>* out_bgra, int* out_w, int* out_h) {
   out_bgra->resize(static_cast<size_t>(w * h));
   const auto* src = static_cast<const uint32_t*>(bits);
   for (int i = 0; i < w * h; ++i) {
-    // Force opaque alpha — CopySubresourceRegion has no blending.
+    // Opaque — CopySubresourceRegion has no blending.
     (*out_bgra)[static_cast<size_t>(i)] = (src[i] & 0x00FFFFFFu) | 0xFF000000u;
   }
 
@@ -268,9 +280,11 @@ bool DrawCreditD3D(IDXGISwapChain* swap) {
 
   const UINT tw = static_cast<UINT>(g_tex_w);
   const UINT th = static_cast<UINT>(g_tex_h);
-  const UINT margin = bh / 18;
-  UINT dstx = (bw > tw) ? (bw - tw) / 2 : 0;
-  UINT dsty = (bh > th + margin) ? (bh - th - margin) : 0;
+  // Top-right, mirroring the Online / App Ver chrome on the left.
+  const UINT margin_x = (bw > 40) ? bw / 48 : 8;
+  const UINT margin_y = (bh > 40) ? bh / 36 : 8;
+  UINT dstx = (bw > tw + margin_x) ? (bw - tw - margin_x) : 0;
+  UINT dsty = margin_y;
 
   D3D11_BOX box{};
   box.left = 0;
