@@ -8,6 +8,7 @@ todos:
 
 - oooh sound for picking up items
 
+- sad trombone (or similar) for dying to Pinwheel (if possible)
 2. ports for DS2, 3, and ER
 
 3. more variety in sound effects. The laugh is quickly going to get overused.
