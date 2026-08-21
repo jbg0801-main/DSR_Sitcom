@@ -156,11 +156,41 @@ bool GameState::ResolveBases() {
     menu_man_ptr_ = 0;
   }
 
-  char buf[160];
-  snprintf(buf, sizeof(buf), "game_state: BaseB*=0x%llX BaseE*=0x%llX MenuMan*=0x%llX",
+  // WorldChrBase — player chr / model id (DSR-Gadget WorldChrBaseAOB).
+  const std::uint8_t pat_w[] = {0x48, 0x8B, 0x05, 0,    0,    0,    0,    0x48, 0x8B, 0x48,
+                                0x68, 0x48, 0x85, 0xC9, 0x0F, 0x84, 0,    0,    0,    0,
+                                0x48, 0x39, 0x5E, 0x10, 0x0F, 0x84, 0,    0,    0,    0, 0x48};
+  const char mask_w[] = "xxx????xxxxxxxxx????xxxxxx????x";
+  const auto hit_w = PatternScan(base, size, pat_w, mask_w);
+  if (hit_w) {
+    world_chr_ptr_ = ResolveRipMov(hit_w);
+  } else {
+    LogWrite("game_state: WorldChrBase not found (lock model limited)");
+    world_chr_ptr_ = 0;
+  }
+
+  // LockTGTBase — RemasterCETable findit4.
+  const std::uint8_t pat_l[] = {0x48, 0x8B, 0x0D, 0, 0, 0, 0, 0x89, 0x99, 0, 0, 0, 0, 0x4C, 0x89,
+                                0x6D, 0x58};
+  const char mask_l[] = "xxx????xx????xxxx";
+  const auto hit_l = PatternScan(base, size, pat_l, mask_l);
+  if (hit_l) {
+    // RIP-relative is mov rcx, [rip+rel] at offset 0: 48 8B 0D xx xx xx xx
+    const auto rel = *reinterpret_cast<std::int32_t*>(hit_l + 3);
+    lock_tgt_ptr_ = hit_l + 7 + rel;
+  } else {
+    LogWrite("game_state: LockTGTBase not found");
+    lock_tgt_ptr_ = 0;
+  }
+
+  char buf[220];
+  snprintf(buf, sizeof(buf),
+           "game_state: BaseB*=0x%llX BaseE*=0x%llX MenuMan*=0x%llX WorldChr*=0x%llX LockTGT*=0x%llX",
            static_cast<unsigned long long>(base_b_ptr_),
            static_cast<unsigned long long>(base_e_ptr_),
-           static_cast<unsigned long long>(menu_man_ptr_));
+           static_cast<unsigned long long>(menu_man_ptr_),
+           static_cast<unsigned long long>(world_chr_ptr_),
+           static_cast<unsigned long long>(lock_tgt_ptr_));
   LogWrite(buf);
   return base_b_ptr_ != 0;
 }
@@ -181,6 +211,8 @@ void GameState::Shutdown() {
   base_b_ptr_ = 0;
   base_e_ptr_ = 0;
   menu_man_ptr_ = 0;
+  world_chr_ptr_ = 0;
+  lock_tgt_ptr_ = 0;
 }
 
 GameSnapshot GameState::Read() {
@@ -254,11 +286,66 @@ GameSnapshot GameState::Read() {
       if (defeated && defeat_seen.insert(pair.defeat_flag).second) {
         s.defeat_flags_on.push_back(pair.defeat_flag);
       }
-      // Active fight: bar/entry flag on and boss not yet defeated.
       if (cheer && !defeated && !s.boss_fight_active) {
         s.boss_fight_active = true;
         s.boss_defeat_flag = pair.defeat_flag;
         s.boss_cheer_flag = pair.cheer_flag;
+      }
+    }
+  }
+
+  // Lock-on flag (RemasterCETable LockTGTBase+0x1431).
+  if (lock_tgt_ptr_ && IsReadable(lock_tgt_ptr_)) {
+    const auto lock_man = ReadT<std::uintptr_t>(lock_tgt_ptr_);
+    if (lock_man && IsReadable(lock_man + 0x1431)) {
+      s.lock_on = ReadT<std::uint8_t>(lock_man + 0x1431) != 0;
+    }
+  }
+
+  // Estus count unknown until a goods inventory reader lands.
+  s.estus_count = -1;
+
+  // Player anims (WorldChr → ChrData1 = *(WorldChr)+0x68):
+  //   CurrentAnim try DSR-Gadget (*(*(*(ChrData1+0x68)+0x48)+0x80)) then
+  //   RemasterCETable (*(*(*(ChrData1+0x48)+0x48)+0x80)) — TAE id.
+  //   StayAnimID (CE): *(*(*(ChrData1+0x48)+0x20)+0x2A0 / 0x498)
+  if (world_chr_ptr_ && IsReadable(world_chr_ptr_)) {
+    const auto world_chr = ReadT<std::uintptr_t>(world_chr_ptr_);
+    if (world_chr && IsReadable(world_chr + 0x68)) {
+      const auto chr_data1 = ReadT<std::uintptr_t>(world_chr + 0x68);
+      if (chr_data1 && IsReadable(chr_data1)) {
+        auto try_current_anim = [&](std::uintptr_t mid_off) -> bool {
+          const auto anim_mid = ReadT<std::uintptr_t>(chr_data1 + mid_off);
+          if (!anim_mid || !IsReadable(anim_mid + 0x48)) {
+            return false;
+          }
+          const auto anim_struct = ReadT<std::uintptr_t>(anim_mid + 0x48);
+          if (!anim_struct || !IsReadable(anim_struct + 0x80)) {
+            return false;
+          }
+          s.current_anim = ReadT<std::int32_t>(anim_struct + 0x80, -1);
+          s.anim_valid = true;
+          return true;
+        };
+        // Prefer CE path (more stable in playtests); fall back to Gadget.
+        if (!try_current_anim(0x48)) {
+          try_current_anim(0x68);
+        }
+
+        const auto stay_a = ReadT<std::uintptr_t>(chr_data1 + 0x48);
+        if (stay_a && IsReadable(stay_a + 0x20)) {
+          const auto stay_b = ReadT<std::uintptr_t>(stay_a + 0x20);
+          if (stay_b) {
+            if (IsReadable(stay_b + 0x2A0)) {
+              s.stay_anim_upper = ReadT<std::int32_t>(stay_b + 0x2A0, -1);
+              s.anim_valid = true;
+            }
+            if (IsReadable(stay_b + 0x498)) {
+              s.stay_anim_lower = ReadT<std::int32_t>(stay_b + 0x498, -1);
+              s.anim_valid = true;
+            }
+          }
+        }
       }
     }
   }

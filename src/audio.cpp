@@ -77,7 +77,6 @@ bool LoadFile(const std::wstring& path, std::vector<std::uint8_t>& out) {
   return ok && read == out.size();
 }
 
-// Scale PCM in a WAV buffer in-place. Supports 8/16-bit PCM; leaves compressed alone.
 bool ApplyGainToWav(std::vector<std::uint8_t>& wav, float gain) {
   if (wav.size() < 44 || gain >= 0.999f) {
     return gain > 0.001f;
@@ -86,7 +85,7 @@ bool ApplyGainToWav(std::vector<std::uint8_t>& wav, float gain) {
     return false;
   }
   if (memcmp(wav.data(), "RIFF", 4) != 0 || memcmp(wav.data() + 8, "WAVE", 4) != 0) {
-    return true;  // play as-is
+    return true;
   }
 
   std::uint16_t audio_format = 1;
@@ -110,7 +109,6 @@ bool ApplyGainToWav(std::vector<std::uint8_t>& wav, float gain) {
       data_size = std::min<std::size_t>(chunk_size, wav.size() - payload);
       break;
     }
-    // Chunk sizes are even-padded.
     std::size_t step = 8 + static_cast<std::size_t>(chunk_size);
     if (chunk_size & 1) {
       ++step;
@@ -119,7 +117,7 @@ bool ApplyGainToWav(std::vector<std::uint8_t>& wav, float gain) {
   }
 
   if (data_off == 0 || data_size == 0 || audio_format != 1) {
-    return true;  // non-PCM: play unmodified
+    return true;
   }
 
   if (bits == 16) {
@@ -128,8 +126,7 @@ bool ApplyGainToWav(std::vector<std::uint8_t>& wav, float gain) {
     for (std::size_t i = 0; i < n; ++i) {
       const float v = static_cast<float>(samples[i]) * gain;
       const int clamped = static_cast<int>(std::lround(v));
-      samples[i] = static_cast<std::int16_t>(
-          std::max(-32768, std::min(32767, clamped)));
+      samples[i] = static_cast<std::int16_t>(std::max(-32768, std::min(32767, clamped)));
     }
   } else if (bits == 8) {
     auto* samples = wav.data() + data_off;
@@ -152,11 +149,20 @@ struct Audio::Impl {
   std::vector<std::wstring> cheer;
   std::vector<std::wstring> applause;
   std::vector<std::wstring> wipe;
+  std::vector<std::wstring> boo;
+  std::vector<std::wstring> ooh;
+  std::vector<std::wstring> trombone;
+  std::vector<std::wstring> bonk;
+  std::vector<std::wstring> boc_death;
   int last_laugh = -1;
   int last_cheer = -1;
   int last_applause = -1;
   int last_wipe = -1;
-  // Kept alive for the duration of async PlaySound(SND_MEMORY).
+  int last_boo = -1;
+  int last_ooh = -1;
+  int last_trombone = -1;
+  int last_bonk = -1;
+  int last_boc_death = -1;
   std::vector<std::uint8_t> play_buf;
 };
 
@@ -169,15 +175,26 @@ bool Audio::Init(const std::wstring& sounds_dir, float volume) {
   CollectPrefix(sounds_dir, L"cheer", impl_->cheer);
   CollectPrefix(sounds_dir, L"applause", impl_->applause);
   CollectPrefix(sounds_dir, L"scene_wipe", impl_->wipe);
+  CollectPrefix(sounds_dir, L"boo", impl_->boo);
+  CollectPrefix(sounds_dir, L"ooh", impl_->ooh);
+  CollectPrefix(sounds_dir, L"trombone", impl_->trombone);
+  CollectPrefix(sounds_dir, L"bonk", impl_->bonk);
+  // Filename is BoCDeath.wav (user asset); also accept boc_death_XX.
+  CollectPrefix(sounds_dir, L"BoCDeath", impl_->boc_death);
+  if (impl_->boc_death.empty()) {
+    CollectPrefix(sounds_dir, L"boc_death", impl_->boc_death);
+  }
 
   LogWrite("audio: sounds_dir=" + WideToUtf8(sounds_dir));
   LogWrite("audio: loaded laugh=" + std::to_string(impl_->laugh.size()) +
            " cheer=" + std::to_string(impl_->cheer.size()) +
            " applause=" + std::to_string(impl_->applause.size()) +
-           " wipe=" + std::to_string(impl_->wipe.size()));
-  for (const auto& p : impl_->laugh) {
-    LogWrite("audio: laugh clip " + WideToUtf8(p));
-  }
+           " wipe=" + std::to_string(impl_->wipe.size()) +
+           " boo=" + std::to_string(impl_->boo.size()) +
+           " ooh=" + std::to_string(impl_->ooh.size()) +
+           " trombone=" + std::to_string(impl_->trombone.size()) +
+           " bonk=" + std::to_string(impl_->bonk.size()) +
+           " boc_death=" + std::to_string(impl_->boc_death.size()));
   return true;
 }
 
@@ -233,6 +250,31 @@ void Audio::Play(SoundCategory category) {
       last = &impl_->last_wipe;
       label = "scene_wipe";
       break;
+    case SoundCategory::Boo:
+      list = &impl_->boo;
+      last = &impl_->last_boo;
+      label = "boo";
+      break;
+    case SoundCategory::Ooh:
+      list = &impl_->ooh;
+      last = &impl_->last_ooh;
+      label = "ooh";
+      break;
+    case SoundCategory::Trombone:
+      list = &impl_->trombone;
+      last = &impl_->last_trombone;
+      label = "trombone";
+      break;
+    case SoundCategory::Bonk:
+      list = &impl_->bonk;
+      last = &impl_->last_bonk;
+      label = "bonk";
+      break;
+    case SoundCategory::BocDeath:
+      list = &impl_->boc_death;
+      last = &impl_->last_boc_death;
+      label = "BoCDeath";
+      break;
   }
 
   const int idx = PickIndex(impl_->rng, static_cast<int>(list->size()), *last);
@@ -263,7 +305,6 @@ void Audio::Play(SoundCategory category) {
     return;
   }
 
-  // Stop previous clip; keep buffer alive for SND_ASYNC | SND_MEMORY.
   PlaySoundW(nullptr, nullptr, 0);
   impl_->play_buf.swap(wav);
 

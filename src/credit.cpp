@@ -15,7 +15,11 @@
 namespace sitcom {
 namespace {
 
-constexpr wchar_t kCreditText[] = L"Sitcom mod by jbg0801 2026";
+constexpr wchar_t kCreditTitle[] = L"Sitcom mod by jbg0801 2026";
+constexpr wchar_t kCreditDedication[] =
+    L"This mod is dedicated to my amazing mum. I won't have her for much longer, "
+    L"and I'll never get to tell her about my projects. I'll miss you mum. I love you, "
+    L"sleep well.";
 
 using PresentFn = HRESULT(__stdcall*)(IDXGISwapChain*, UINT, UINT);
 
@@ -82,18 +86,35 @@ void ReleaseDeviceObjects() {
 bool RenderTextBitmap(std::vector<uint32_t>* out_bgra, int* out_w, int* out_h) {
   HDC screen = GetDC(nullptr);
   HDC hdc = CreateCompatibleDC(screen);
-  // Match title-menu chrome: small white UI text on black (like Online / App Ver).
-  HFONT font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                           OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                           DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-  HGDIOBJ old_font = font ? SelectObject(hdc, font) : nullptr;
+  // ANTIALIASED (not ClearType) — ClearType overhang is often clipped under Wine/Proton.
+  // Fixed wide canvas: Wine GetTextExtent can under-measure, which was cutting "2026".
+  HFONT title_font =
+      CreateFontW(-20, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+                  DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+  HFONT body_font =
+      CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+                  DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
 
-  SIZE sz{};
-  GetTextExtentPoint32W(hdc, kCreditText, static_cast<int>(wcslen(kCreditText)), &sz);
-  const int pad_x = 10;
-  const int pad_y = 6;
-  const int w = sz.cx + pad_x * 2;
-  const int h = sz.cy + pad_y * 2;
+  const int pad_x = 20;
+  const int pad_y = 12;
+  const int gap = 8;
+  const int canvas_w = 560;
+
+  HGDIOBJ old_font = title_font ? SelectObject(hdc, title_font) : nullptr;
+  SIZE title_sz{};
+  GetTextExtentPoint32W(hdc, kCreditTitle, static_cast<int>(wcslen(kCreditTitle)), &title_sz);
+
+  RECT body_measure{0, 0, canvas_w - pad_x * 2, 0};
+  if (body_font) {
+    SelectObject(hdc, body_font);
+  }
+  DrawTextW(hdc, kCreditDedication, -1, &body_measure,
+            DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+  const int body_h = body_measure.bottom - body_measure.top;
+  const int w = canvas_w;
+  const int h = pad_y + title_sz.cy + gap + body_h + pad_y + 8;
 
   BITMAPINFO bmi{};
   bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -110,40 +131,100 @@ bool RenderTextBitmap(std::vector<uint32_t>* out_bgra, int* out_w, int* out_h) {
     if (old_font) {
       SelectObject(hdc, old_font);
     }
-    if (font) {
-      DeleteObject(font);
+    if (title_font) {
+      DeleteObject(title_font);
+    }
+    if (body_font) {
+      DeleteObject(body_font);
     }
     DeleteDC(hdc);
     return false;
   }
   HGDIOBJ old_bmp = SelectObject(hdc, bmp);
-  RECT rc{0, 0, w, h};
+  RECT fill{0, 0, w, h};
   HBRUSH brush = CreateSolidBrush(RGB(0, 0, 0));
-  FillRect(hdc, &rc, brush);
+  FillRect(hdc, &fill, brush);
   DeleteObject(brush);
 
   SetBkMode(hdc, TRANSPARENT);
   SetTextColor(hdc, RGB(255, 255, 255));
-  DrawTextW(hdc, kCreditText, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+  RECT title_rc{pad_x, pad_y, w - pad_x, pad_y + title_sz.cy};
+  if (title_font) {
+    SelectObject(hdc, title_font);
+  }
+  DrawTextW(hdc, kCreditTitle, -1, &title_rc,
+            DT_RIGHT | DT_SINGLELINE | DT_NOPREFIX | DT_NOCLIP);
+
+  RECT body_rc{pad_x, pad_y + title_sz.cy + gap, w - pad_x, h - pad_y};
+  if (body_font) {
+    SelectObject(hdc, body_font);
+  }
+  DrawTextW(hdc, kCreditDedication, -1, &body_rc,
+            DT_WORDBREAK | DT_RIGHT | DT_NOPREFIX);
+
   if (old_font) {
     SelectObject(hdc, old_font);
   }
-  if (font) {
-    DeleteObject(font);
+  if (title_font) {
+    DeleteObject(title_font);
+  }
+  if (body_font) {
+    DeleteObject(body_font);
   }
 
-  out_bgra->resize(static_cast<size_t>(w * h));
+  // Crop to ink + pad so the blit isn't an oversized black slab, but never clip glyphs.
   const auto* src = static_cast<const uint32_t*>(bits);
-  for (int i = 0; i < w * h; ++i) {
-    // Opaque — CopySubresourceRegion has no blending.
-    (*out_bgra)[static_cast<size_t>(i)] = (src[i] & 0x00FFFFFFu) | 0xFF000000u;
+  int min_x = w;
+  int min_y = h;
+  int max_x = 0;
+  int max_y = 0;
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      const uint32_t p = src[y * w + x] & 0x00FFFFFFu;
+      if (p != 0) {
+        if (x < min_x) {
+          min_x = x;
+        }
+        if (y < min_y) {
+          min_y = y;
+        }
+        if (x > max_x) {
+          max_x = x;
+        }
+        if (y > max_y) {
+          max_y = y;
+        }
+      }
+    }
+  }
+  if (max_x < min_x) {
+    SelectObject(hdc, old_bmp);
+    DeleteObject(bmp);
+    DeleteDC(hdc);
+    return false;
+  }
+  const int crop_pad = 10;
+  min_x = (min_x > crop_pad) ? (min_x - crop_pad) : 0;
+  min_y = (min_y > crop_pad) ? (min_y - crop_pad) : 0;
+  max_x = (max_x + crop_pad < w) ? (max_x + crop_pad) : (w - 1);
+  max_y = (max_y + crop_pad < h) ? (max_y + crop_pad) : (h - 1);
+  const int cw = max_x - min_x + 1;
+  const int ch = max_y - min_y + 1;
+
+  out_bgra->resize(static_cast<size_t>(cw * ch));
+  for (int y = 0; y < ch; ++y) {
+    for (int x = 0; x < cw; ++x) {
+      const uint32_t p = src[(min_y + y) * w + (min_x + x)];
+      (*out_bgra)[static_cast<size_t>(y * cw + x)] = (p & 0x00FFFFFFu) | 0xFF000000u;
+    }
   }
 
   SelectObject(hdc, old_bmp);
   DeleteObject(bmp);
   DeleteDC(hdc);
-  *out_w = w;
-  *out_h = h;
+  *out_w = cw;
+  *out_h = ch;
   return true;
 }
 
@@ -280,8 +361,8 @@ bool DrawCreditD3D(IDXGISwapChain* swap) {
 
   const UINT tw = static_cast<UINT>(g_tex_w);
   const UINT th = static_cast<UINT>(g_tex_h);
-  // Top-right, mirroring the Online / App Ver chrome on the left.
-  const UINT margin_x = (bw > 40) ? bw / 48 : 8;
+  // Top-right; keep clear of the display edge (Proton overlays / overscan).
+  const UINT margin_x = (bw > 80) ? (bw / 28) : 24;
   const UINT margin_y = (bh > 40) ? bh / 36 : 8;
   UINT dstx = (bw > tw + margin_x) ? (bw - tw - margin_x) : 0;
   UINT dsty = margin_y;

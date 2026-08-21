@@ -5,6 +5,7 @@
 #include "events.h"
 #include "fmod_volume.h"
 #include "game_state.h"
+#include "item_hooks.h"
 #include "log.h"
 #include "paths.h"
 
@@ -100,6 +101,8 @@ DWORD WINAPI WorkerMain(LPVOID) {
   }
   LogWrite("worker: GameState ready");
 
+  ItemHooksInit();
+
   // Attach FMOD only after the game is up — IAT/inline hooks, no LoadLibrary, no probes.
   if (FmodVolumeInit()) {
     float se = 1.f;
@@ -148,7 +151,10 @@ DWORD WINAPI WorkerMain(LPVOID) {
                " cheer=" + std::to_string(snap.boss_cheer_flag) +
                " banner=" + std::to_string(snap.banner_message) + " sfx=" + sfx_buf +
                " area=" + std::to_string(snap.area_number) + "/" +
-               std::to_string(snap.world_number));
+               std::to_string(snap.world_number) +
+               " anim=" + std::to_string(snap.current_anim) +
+               " stay=" + std::to_string(snap.stay_anim_upper) + "/" +
+               std::to_string(snap.stay_anim_lower));
     }
     events.Update(snap, cfg, audio);
     if (WaitForSingleObject(g_stop_event, poll_ms) != WAIT_TIMEOUT) {
@@ -157,6 +163,7 @@ DWORD WINAPI WorkerMain(LPVOID) {
   }
 
   CreditShutdown();
+  ItemHooksShutdown();
   game.Shutdown();
   audio.Shutdown();
   FmodVolumeShutdown();

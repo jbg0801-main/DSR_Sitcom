@@ -12,7 +12,7 @@ podman run --rm -v "$ROOT":/src:Z -w /src docker.io/library/fedora:44 bash -lc '
   mkdir -p /tmp/dsr_sitcom_pkg/sitcom/sounds
   cp build/dinput8.dll /tmp/dsr_sitcom_pkg/
   cp sitcom/config.ini /tmp/dsr_sitcom_pkg/sitcom/
-  cp sitcom/sounds/*.wav /tmp/dsr_sitcom_pkg/sitcom/sounds/
+  cp sitcom/sounds/* /tmp/dsr_sitcom_pkg/sitcom/sounds/
   mkdir -p dist
   rm -f dist/DSR_Sitcom.zip
   (cd /tmp/dsr_sitcom_pkg && zip -r /src/dist/DSR_Sitcom.zip dinput8.dll sitcom)

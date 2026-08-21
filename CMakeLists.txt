@@ -14,6 +14,7 @@ add_library(dinput8 SHARED
   src/audio.cpp
   src/credit.cpp
   src/fmod_volume.cpp
+  src/item_hooks.cpp
   src/event_flags.cpp
   src/game_state.cpp
   src/events.cpp

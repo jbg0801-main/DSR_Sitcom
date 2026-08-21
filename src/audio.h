@@ -9,6 +9,11 @@ enum class SoundCategory {
   Cheer,
   Applause,
   SceneWipe,
+  Boo,
+  Ooh,
+  Trombone,
+  Bonk,
+  BocDeath,  // Bed of Chaos death — loads BoCDeath*.wav
 };
 
 class Audio {
