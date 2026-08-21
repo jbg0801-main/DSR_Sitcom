@@ -80,6 +80,7 @@ Enabled by default. Driven by StayAnim (ESD) / CurrentAnim rising edges — see 
 - Restore the real prologue, call `update()`, then re-arm — never `GetVolume` from the sitcom worker (FMOD Event is not thread-safe; that race crashed at the title menu)
 - Never `LoadLibrary` FMOD; never probe guessed EventSystem pointers
 - Worker only reads a cached atomic. Final gain = `config.ini volume` × FMOD `SE` volume (0–1)
+- Startup laugh smoke-test is intentional (load indicator); it is not the title-menu crash
 
 ## Title credit
 
