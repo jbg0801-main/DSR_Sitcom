@@ -49,8 +49,6 @@ category when multiple files are present (avoids immediate repeats).
 | `bonk.wav` / `bonk_XX.wav` | Heavy O&S hit (Smough heuristic) |
 | `scene_wipe.wav` / `scene_wipe_XX.wav` | Area title card |
 
-See `sitcom/sounds/ATTRIBUTION.txt` for placeholder clip notes.
-
 ## Build (Linux → Windows DLL)
 
 Requires MinGW-w64 (`x86_64-w64-mingw32-g++`) and CMake.
