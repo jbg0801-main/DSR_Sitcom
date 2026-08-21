@@ -76,9 +76,10 @@ Enabled by default. Driven by StayAnim (ESD) / CurrentAnim rising edges — see 
 
 ## Sound Effect volume
 
-- One-shot hook on FMOD C++ `EventSystem::update`, then poll `SE` category `GetVolume`
+- Hook FMOD C++ `EventSystem::update` and read `SE` via C `GetCategory`/`GetVolume` **on that audio thread only**
+- Restore the real prologue, call `update()`, then re-arm — never `GetVolume` from the sitcom worker (FMOD Event is not thread-safe; that race crashed at the title menu)
 - Never `LoadLibrary` FMOD; never probe guessed EventSystem pointers
-- Final gain = `config.ini volume` × FMOD `SE` volume (0–1)
+- Worker only reads a cached atomic. Final gain = `config.ini volume` × FMOD `SE` volume (0–1)
 
 ## Title credit
 

@@ -2,7 +2,7 @@
 
 namespace sitcom {
 
-// Hook FMOD EventSystem_Update to capture the system, then read SFX category volume.
+// Capture in-game SE volume on the FMOD audio thread; worker reads a cached atomic.
 bool FmodVolumeInit();
 void FmodVolumeShutdown();
 
