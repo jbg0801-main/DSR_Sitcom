@@ -82,6 +82,9 @@ DWORD WINAPI WorkerMain(LPVOID) {
     return 0;
   }
 
+  LogWrite("worker: playing startup laugh smoke-test");
+  audio.Play(SoundCategory::Laugh);
+
   GameState game;
   int failures = 0;
   while (g_running && !game.Init()) {
